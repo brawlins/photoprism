@@ -649,58 +649,45 @@ export default {
           pagesWrapper.setAttribute("class", "pswp__pdf-pages");
           scrollContainer.appendChild(pagesWrapper);
 
-          // Zoom controls — sticky pill bar shown at the bottom of the scroll area.
-          const zoomBar = document.createElement("div");
-          zoomBar.setAttribute("class", "pswp__pdf-zoom-bar");
-
-          const zoomOutBtn = document.createElement("button");
-          zoomOutBtn.setAttribute("type", "button");
-          zoomOutBtn.setAttribute("class", "pswp__pdf-zoom-btn");
-          zoomOutBtn.setAttribute("title", this.$gettext("Zoom Out"));
-          zoomOutBtn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M15.5,14H14.71L14.43,13.73C15.41,12.59 16,11.11 16,9.5A6.5,6.5 0 0,0 9.5,3A6.5,6.5 0 0,0 3,9.5A6.5,6.5 0 0,0 9.5,16C11.11,16 12.59,15.41 13.73,14.43L14,14.71V15.5L19,20.5L20.5,19L15.5,14M9.5,14C7,14 5,12 5,9.5C5,7 7,5 9.5,5C12,5 14,7 14,9.5C14,12 12,14 9.5,14M7,9H12V10H7V9Z"/></svg>`;
-
-          const zoomLabel = document.createElement("button");
-          zoomLabel.setAttribute("type", "button");
-          zoomLabel.setAttribute("class", "pswp__pdf-zoom-btn pswp__pdf-zoom-label");
-          zoomLabel.setAttribute("title", this.$gettext("Reset Zoom"));
-          zoomLabel.textContent = "100%";
-
-          const zoomInBtn = document.createElement("button");
-          zoomInBtn.setAttribute("type", "button");
-          zoomInBtn.setAttribute("class", "pswp__pdf-zoom-btn");
-          zoomInBtn.setAttribute("title", this.$gettext("Zoom In"));
-          zoomInBtn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M15.5,14L20.5,19L19,20.5L14,15.5V14.71L13.73,14.43C12.59,15.41 11.11,16 9.5,16A6.5,6.5 0 0,1 3,9.5A6.5,6.5 0 0,1 9.5,3A6.5,6.5 0 0,1 16,9.5C16,11.11 15.41,12.59 14.43,13.73L14.71,14H15.5M9.5,14C12,14 14,12 14,9.5C14,7 12,5 9.5,5C7,5 5,7 5,9.5C5,12 7,14 9.5,14M12,10H10V12H9V10H7V9H9V7H10V9H12V10Z"/></svg>`;
-
-          zoomBar.appendChild(zoomOutBtn);
-          zoomBar.appendChild(zoomLabel);
-          zoomBar.appendChild(zoomInBtn);
-          scrollContainer.appendChild(zoomBar);
-
-          // Zoom state.
+          // Zoom state. pdfFitZoom / pdfFillZoom are filled in by renderPdf after
+          // page 1 is rendered; until then they default to 1.
           content.data.pdfZoom = 1.0;
+          content.data.pdfFitZoom = 1.0;
+          content.data.pdfFillZoom = 1.0;
 
           const applyZoom = (newZoom) => {
-            const clamped = Math.min(3.0, Math.max(0.5, newZoom));
+            const clamped = Math.min(3.0, Math.max(0.25, newZoom));
             content.data.pdfZoom = clamped;
             pagesWrapper.style.zoom = String(clamped);
-            zoomLabel.textContent = `${Math.round(clamped * 100)}%`;
+            // Mirror the image viewer cursor: zoom-in at fit level, zoom-out when zoomed in.
+            pagesWrapper.classList.toggle("is-zoomed", clamped > content.data.pdfFitZoom + 0.01);
           };
 
-          zoomOutBtn.addEventListener("click", (e) => {
+          // Click on the pages area toggles between fit-to-page and fit-width zoom,
+          // matching the click-to-toggle-zoom behaviour of the image viewer.
+          pagesWrapper.addEventListener("click", (e) => {
             e.stopPropagation();
-            applyZoom(content.data.pdfZoom / 1.25);
-          });
-          zoomInBtn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            applyZoom(content.data.pdfZoom * 1.25);
-          });
-          zoomLabel.addEventListener("click", (e) => {
-            e.stopPropagation();
-            applyZoom(1.0);
+            if (content.data.pdfZoom > content.data.pdfFitZoom + 0.01) {
+              // Currently zoomed in — zoom back to fit-to-page, preserving position.
+              const prevRatio = scrollContainer.scrollHeight > 0 ? scrollContainer.scrollTop / scrollContainer.scrollHeight : 0;
+              applyZoom(content.data.pdfFitZoom);
+              requestAnimationFrame(() => {
+                scrollContainer.scrollTop = prevRatio * scrollContainer.scrollHeight;
+              });
+            } else if (content.data.pdfFillZoom > content.data.pdfFitZoom * 1.1) {
+              // Only zoom in if fill-width is meaningfully larger than fit-to-page;
+              // if the page already fills the width there is nothing useful to do.
+              // Preserve the relative scroll position so the view does not jump.
+              const prevRatio = scrollContainer.scrollHeight > 0 ? scrollContainer.scrollTop / scrollContainer.scrollHeight : 0;
+              applyZoom(content.data.pdfFillZoom);
+              requestAnimationFrame(() => {
+                scrollContainer.scrollTop = prevRatio * scrollContainer.scrollHeight;
+              });
+            }
           });
 
-          // Store refs on content.data so the centralised capture-phase wheel
-          // listener registered in onLightboxOpened can reach them without closure issues.
+          // Store refs on content.data for the capture-phase wheel listener in
+          // onLightboxOpened (Ctrl+wheel zoom and plain-wheel scroll).
           content.data.pdfScrollContainer = scrollContainer;
           content.data.pdfApplyZoom = applyZoom;
 
@@ -926,16 +913,19 @@ export default {
           }
         }
 
-        // After the first page is rendered, apply a fit-to-page initial zoom so
-        // the full page is visible in the viewport without scrolling. This mirrors
-        // the image viewer's "fit" initial zoom level.
-        // Layout constants: 60px top padding (toolbar) + 80px bottom padding + 8px
-        // page margin bottom = 148px total reserved height.
+        // After the first page is rendered, compute and apply a fit-to-page initial
+        // zoom so the full page is visible in the viewport, mirroring the image
+        // viewer's "fit" initial zoom level.
+        // Layout constants: 60px top padding (toolbar) + 24px bottom padding +
+        // 8px page margin = 92px total reserved height.
         if (pageNum === 1 && data?.pdfApplyZoom) {
           const cssHeight = scaledViewport.height / dpr;
           const fitW = window.innerWidth / cssWidth;
-          const fitH = (window.innerHeight - 148) / cssHeight;
-          data.pdfApplyZoom(Math.min(fitW, fitH));
+          const fitH = (window.innerHeight - 92) / cssHeight;
+          data.pdfFitZoom = Math.min(fitW, fitH);
+          // Fit-width is the secondary (zoomed-in) level: page fills horizontal space.
+          data.pdfFillZoom = fitW;
+          data.pdfApplyZoom(data.pdfFitZoom);
         }
       }
     },
