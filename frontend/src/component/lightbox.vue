@@ -925,6 +925,18 @@ export default {
             this.log(`pdfjs: failed to render page ${pageNum}`, err);
           }
         }
+
+        // After the first page is rendered, apply a fit-to-page initial zoom so
+        // the full page is visible in the viewport without scrolling. This mirrors
+        // the image viewer's "fit" initial zoom level.
+        // Layout constants: 60px top padding (toolbar) + 80px bottom padding + 8px
+        // page margin bottom = 148px total reserved height.
+        if (pageNum === 1 && data?.pdfApplyZoom) {
+          const cssHeight = scaledViewport.height / dpr;
+          const fitW = window.innerWidth / cssWidth;
+          const fitH = (window.innerHeight - 148) / cssHeight;
+          data.pdfApplyZoom(Math.min(fitW, fitH));
+        }
       }
     },
     onVideoEvent(ev) {
