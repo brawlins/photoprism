@@ -608,6 +608,16 @@ export default {
         return video;
       }
 
+      // Handle PDF/document types: render inline in the browser rather than as a thumbnail image.
+      if (model?.Type === media.Document && model?.DownloadUrl) {
+        return {
+          type: "pdf",
+          model: model,
+          msrc: img.src,
+          downloadUrl: model.DownloadUrl,
+        };
+      }
+
       // Return the image data so that PhotoSwipe can render it in the lightbox,
       // see https://photoswipe.com/data-sources/#dynamically-generated-data.
       return img;
@@ -615,13 +625,43 @@ export default {
     isContentZoomable(isContentZoomable, content) {
       if (content.data?.model?.Type === media.Live) {
         isContentZoomable = true;
+      } else if (content.data?.model?.Type === media.Document) {
+        // PDF slides are not zoomable via PhotoSwipe; the browser's native PDF viewer handles zoom.
+        isContentZoomable = false;
       }
 
       return isContentZoomable;
     },
     onContentLoad(ev) {
       const { content } = ev;
-      if (content.data?.type === "html") {
+      if (content.data?.type === "pdf") {
+        // Prevent default loading behavior.
+        ev.preventDefault();
+
+        try {
+          // Create scrollable container for the rendered PDF pages.
+          const mediaElement = document.createElement("div");
+          mediaElement.setAttribute("class", "pswp__media pswp__media--document");
+
+          content.element = mediaElement;
+          content.state = "loading";
+          content.data.loading = true;
+
+          // Render the PDF to canvas elements asynchronously via PDF.js.
+          this.renderPdf(content.data.downloadUrl, mediaElement, content.data)
+            .then(() => {
+              content.data.loading = false;
+              content.onLoaded();
+            })
+            .catch((err) => {
+              this.log("failed to render PDF", err);
+              content.data.loading = false;
+              content.onLoaded();
+            });
+        } catch (err) {
+          this.log("failed to load PDF", err);
+        }
+      } else if (content.data?.type === "html") {
         // Prevent default loading behavior.
         ev.preventDefault();
 
@@ -667,6 +707,12 @@ export default {
         // Remove video event listeners.
         data.events?.abort();
         data.events = null;
+      }
+
+      // Cancel any in-progress PDF.js loading task.
+      if (ev?.content?.data?.pdfTask) {
+        ev.content.data.pdfTask.destroy().catch(() => {});
+        ev.content.data.pdfTask = null;
       }
     },
     // Creates an HTMLMediaElement for playing videos, animations, and live photos.
@@ -758,6 +804,67 @@ export default {
 
       // Return HTMLMediaElement.
       return video;
+    },
+    // Renders a PDF document into canvas elements inside the given container using PDF.js.
+    // Each page is rendered as a separate <canvas> element; the container is scrollable.
+    async renderPdf(url, container, data) {
+      // Dynamically import PDF.js so it is only bundled when a document is opened.
+      const pdfjsLib = await import("pdfjs-dist");
+
+      // Configure the PDF.js worker. Webpack 5 processes new URL() statically and
+      // emits the worker file as a separate asset so the main thread is not blocked.
+      if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).href;
+      }
+
+      const loadingTask = pdfjsLib.getDocument(url);
+
+      // Keep a reference on the content data object so onContentDestroy can cancel the load.
+      data.pdfTask = loadingTask;
+
+      let pdf;
+      try {
+        pdf = await loadingTask.promise;
+      } catch (err) {
+        // Ignore expected cancellation errors.
+        if (err?.name !== "RenderingCancelledException" && err?.name !== "AbortException") {
+          throw err;
+        }
+        return;
+      }
+
+      const dpr = window.devicePixelRatio || 1;
+      // Leave some horizontal margin; cap width for readability on wide screens.
+      const maxCssWidth = Math.min(window.innerWidth - 48, 920);
+
+      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        const page = await pdf.getPage(pageNum);
+        const naturalViewport = page.getViewport({ scale: 1 });
+
+        // Scale so the page CSS width fits comfortably in the viewport.
+        const cssWidth = Math.min(maxCssWidth, naturalViewport.width);
+        const scale = (cssWidth / naturalViewport.width) * dpr;
+        const scaledViewport = page.getViewport({ scale });
+
+        const canvas = document.createElement("canvas");
+        canvas.className = "pswp__pdf-page";
+        canvas.width = scaledViewport.width;
+        canvas.height = scaledViewport.height;
+        // Use CSS dimensions (undoing the devicePixelRatio scaling) for crisp rendering.
+        canvas.style.width = `${cssWidth}px`;
+        canvas.style.height = `${scaledViewport.height / dpr}px`;
+
+        container.appendChild(canvas);
+
+        const ctx = canvas.getContext("2d");
+        try {
+          await page.render({ canvasContext: ctx, viewport: scaledViewport }).promise;
+        } catch (err) {
+          if (err?.name !== "RenderingCancelledException") {
+            this.log(`pdfjs: failed to render page ${pageNum}`, err);
+          }
+        }
+      }
     },
     onVideoEvent(ev) {
       const { video, data } = this.getContent();
