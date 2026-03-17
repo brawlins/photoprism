@@ -255,44 +255,17 @@
     visibility: visible;
 }
 
+/* PDF.js viewer iframe — starts below the PhotoSwipe toolbar. */
 .pswp__media.pswp__media--document {
     position: fixed;
     left: 0;
-    top: 0;
+    top: 60px;
     width: 100vw;
-    height: 100vh;
+    height: calc(100vh - 60px);
     max-width: none;
     max-height: none;
-    overflow-y: auto;
-    overflow-x: auto;
-    background: #404040;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    /* Top padding reserves space for the PhotoSwipe toolbar. */
-    padding: 60px 0 24px;
-    box-sizing: border-box;
-    -webkit-overflow-scrolling: touch;
-}
-
-.pswp__pdf-pages {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    flex-shrink: 0;
-    cursor: zoom-in;
-}
-
-.pswp__pdf-pages.is-zoomed {
-    cursor: zoom-out;
-}
-
-.pswp__media.pswp__media--document .pswp__pdf-page {
+    border: none;
     display: block;
-    max-width: 100%;
-    height: auto;
-    margin: 0 auto 8px;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
 }
 
 .pswp__img {

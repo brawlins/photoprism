@@ -639,75 +639,30 @@ export default {
         ev.preventDefault();
 
         try {
-          // Outer scrollable container fills the viewport.
-          const scrollContainer = document.createElement("div");
-          scrollContainer.setAttribute("class", "pswp__media pswp__media--document");
+          // Load the PDF inside the full PDF.js viewer application (served from
+          // /static/pdfjs/, downloaded via scripts/download-pdfjs.sh / make dep-pdfjs).
+          // The viewer provides its own toolbar with zoom, page navigation, and thumbnails.
+          const iframe = document.createElement("iframe");
+          iframe.setAttribute("class", "pswp__media pswp__media--document");
+          iframe.setAttribute("title", content.data.model?.Title || "PDF");
+          iframe.setAttribute("allowfullscreen", "");
+          const pdfUrl = content.data.downloadUrl.includes("?") ? `${content.data.downloadUrl}&view=1` : `${content.data.downloadUrl}?view=1`;
+          iframe.src = `/static/pdfjs/web/viewer.html?file=${encodeURIComponent(pdfUrl)}`;
 
-          // Inner wrapper that receives the CSS zoom property so the scroll area
-          // resizes correctly without re-rendering the canvas elements.
-          const pagesWrapper = document.createElement("div");
-          pagesWrapper.setAttribute("class", "pswp__pdf-pages");
-          scrollContainer.appendChild(pagesWrapper);
-
-          // Zoom state. pdfFitZoom / pdfFillZoom are filled in by renderPdf after
-          // page 1 is rendered; until then they default to 1.
-          content.data.pdfZoom = 1.0;
-          content.data.pdfFitZoom = 1.0;
-          content.data.pdfFillZoom = 1.0;
-
-          const applyZoom = (newZoom) => {
-            const clamped = Math.min(3.0, Math.max(0.25, newZoom));
-            content.data.pdfZoom = clamped;
-            pagesWrapper.style.zoom = String(clamped);
-            // Mirror the image viewer cursor: zoom-in at fit level, zoom-out when zoomed in.
-            pagesWrapper.classList.toggle("is-zoomed", clamped > content.data.pdfFitZoom + 0.01);
-          };
-
-          // Click on the pages area toggles between fit-to-page and fit-width zoom,
-          // matching the click-to-toggle-zoom behaviour of the image viewer.
-          pagesWrapper.addEventListener("click", (e) => {
-            e.stopPropagation();
-            if (content.data.pdfZoom > content.data.pdfFitZoom + 0.01) {
-              // Currently zoomed in — zoom back to fit-to-page, preserving position.
-              const prevRatio = scrollContainer.scrollHeight > 0 ? scrollContainer.scrollTop / scrollContainer.scrollHeight : 0;
-              applyZoom(content.data.pdfFitZoom);
-              requestAnimationFrame(() => {
-                scrollContainer.scrollTop = prevRatio * scrollContainer.scrollHeight;
-              });
-            } else if (content.data.pdfFillZoom > content.data.pdfFitZoom * 1.1) {
-              // Only zoom in if fill-width is meaningfully larger than fit-to-page;
-              // if the page already fills the width there is nothing useful to do.
-              // Preserve the relative scroll position so the view does not jump.
-              const prevRatio = scrollContainer.scrollHeight > 0 ? scrollContainer.scrollTop / scrollContainer.scrollHeight : 0;
-              applyZoom(content.data.pdfFillZoom);
-              requestAnimationFrame(() => {
-                scrollContainer.scrollTop = prevRatio * scrollContainer.scrollHeight;
-              });
-            }
-          });
-
-          // Store refs on content.data for the capture-phase wheel listener in
-          // onLightboxOpened (Ctrl+wheel zoom and plain-wheel scroll).
-          content.data.pdfScrollContainer = scrollContainer;
-          content.data.pdfApplyZoom = applyZoom;
-
-          content.element = scrollContainer;
+          content.element = iframe;
           content.state = "loading";
           content.data.loading = true;
 
-          // Render the PDF into the inner pages wrapper via PDF.js.
-          this.renderPdf(content.data.downloadUrl, pagesWrapper, content.data)
-            .then(() => {
+          iframe.addEventListener(
+            "load",
+            () => {
               content.data.loading = false;
               content.onLoaded();
-            })
-            .catch((err) => {
-              this.log("failed to render PDF", err);
-              content.data.loading = false;
-              content.onLoaded();
-            });
+            },
+            { once: true }
+          );
         } catch (err) {
-          this.log("failed to load PDF", err);
+          this.log("failed to load PDF viewer", err);
         }
       } else if (content.data?.type === "html") {
         // Prevent default loading behavior.
@@ -852,82 +807,6 @@ export default {
 
       // Return HTMLMediaElement.
       return video;
-    },
-    // Renders a PDF document into canvas elements inside the given container using PDF.js.
-    // Each page is rendered as a separate <canvas> element; the container is scrollable.
-    async renderPdf(url, container, data) {
-      // Dynamically import PDF.js so it is only bundled when a document is opened.
-      const pdfjsLib = await import("pdfjs-dist");
-
-      // Configure the PDF.js worker. Webpack 5 processes new URL() statically and
-      // emits the worker file as a separate asset so the main thread is not blocked.
-      if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
-        pdfjsLib.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).href;
-      }
-
-      const loadingTask = pdfjsLib.getDocument(url);
-
-      // Keep a reference on the content data object so onContentDestroy can cancel the load.
-      data.pdfTask = loadingTask;
-
-      let pdf;
-      try {
-        pdf = await loadingTask.promise;
-      } catch (err) {
-        // Ignore expected cancellation errors.
-        if (err?.name !== "RenderingCancelledException" && err?.name !== "AbortException") {
-          throw err;
-        }
-        return;
-      }
-
-      const dpr = window.devicePixelRatio || 1;
-      // Leave some horizontal margin; cap width for readability on wide screens.
-      const maxCssWidth = Math.min(window.innerWidth - 48, 920);
-
-      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-        const page = await pdf.getPage(pageNum);
-        const naturalViewport = page.getViewport({ scale: 1 });
-
-        // Scale so the page CSS width fits comfortably in the viewport.
-        const cssWidth = Math.min(maxCssWidth, naturalViewport.width);
-        const scale = (cssWidth / naturalViewport.width) * dpr;
-        const scaledViewport = page.getViewport({ scale });
-
-        const canvas = document.createElement("canvas");
-        canvas.className = "pswp__pdf-page";
-        canvas.width = scaledViewport.width;
-        canvas.height = scaledViewport.height;
-        // Use CSS dimensions (undoing the devicePixelRatio scaling) for crisp rendering.
-        canvas.style.width = `${cssWidth}px`;
-        canvas.style.height = `${scaledViewport.height / dpr}px`;
-
-        container.appendChild(canvas);
-
-        const ctx = canvas.getContext("2d");
-        try {
-          await page.render({ canvasContext: ctx, viewport: scaledViewport }).promise;
-        } catch (err) {
-          if (err?.name !== "RenderingCancelledException") {
-            this.log(`pdfjs: failed to render page ${pageNum}`, err);
-          }
-        }
-
-        // After the first page is rendered, compute and apply a fit-to-page initial
-        // zoom so the full page is visible in the viewport, mirroring the image
-        // viewer's "fit" initial zoom level.
-        // Layout constants: 60px top padding (toolbar) + 24px bottom padding +
-        // 8px page margin = 92px total reserved height.
-        if (pageNum === 1 && data?.pdfApplyZoom) {
-          const cssHeight = scaledViewport.height / dpr;
-          const fitW = window.innerWidth / cssWidth;
-          const fitH = (window.innerHeight - 92) / cssHeight;
-          data.pdfFitZoom = Math.min(fitW, fitH);
-          // Fit-width is the secondary (zoomed-in) level: page fills horizontal space.
-          data.pdfFillZoom = fitW;
-          data.pdfApplyZoom(data.pdfFitZoom);
-        }
-      }
     },
     onVideoEvent(ev) {
       const { video, data } = this.getContent();
@@ -1636,33 +1515,6 @@ export default {
     },
     onLightboxOpened() {
       this.addEventListeners();
-
-      // Register a single capture-phase wheel listener on the PhotoSwipe root element.
-      // Capture fires before PhotoSwipe's own bubble-phase wheel handler, which always
-      // calls e.preventDefault() unconditionally. For PDF slides we stop immediate
-      // propagation so PhotoSwipe never sees the event, then drive scroll or zoom
-      // ourselves. For all other slide types we return immediately so PhotoSwipe's
-      // normal wheel-to-zoom behaviour is preserved.
-      this.lightbox.pswp.element.addEventListener(
-        "wheel",
-        (e) => {
-          const data = this.lightbox?.pswp?.currSlide?.content?.data;
-          if (data?.type !== "pdf") {
-            return;
-          }
-          e.stopImmediatePropagation();
-          if (e.ctrlKey || e.metaKey) {
-            e.preventDefault();
-            data.pdfApplyZoom(data.pdfZoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
-          } else {
-            e.preventDefault();
-            data.pdfScrollContainer.scrollTop += e.deltaY;
-            data.pdfScrollContainer.scrollLeft += e.deltaX;
-          }
-        },
-        { capture: true, passive: false }
-      );
-
       this.$event.publish("lightbox.opened");
     },
     onLightboxClose() {
