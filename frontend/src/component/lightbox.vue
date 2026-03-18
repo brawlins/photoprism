@@ -656,6 +656,20 @@ export default {
           iframe.addEventListener(
             "load",
             () => {
+              try {
+                const doc = iframe.contentDocument;
+
+                if (doc) {
+                  const style = doc.createElement("style");
+                  style.setAttribute("data-photoprism-pdf-viewer", "hide-annotation-tools");
+                  style.textContent =
+                    "#editorModeButtons, #editorModeSeparator, #downloadButton, #secondaryDownload, #secondaryToolbarToggle { display: none !important; }";
+                  doc.head?.appendChild(style);
+                }
+              } catch (err) {
+                this.log("failed to hide PDF annotation tools", err);
+              }
+
               content.data.loading = false;
               content.onLoaded();
             },
